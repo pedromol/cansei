@@ -1,0 +1,16 @@
+node_modules
+dist
+auth
+data
+.env
+.env.*
+!.env.example
+test
+k8s
+.serena
+.git
+.gitignore
+coverage
+*.log
+.DS_Store
+README.md

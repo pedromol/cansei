@@ -1,0 +1,148 @@
+# Exemplo de deploy do cansei em Kubernetes.
+#
+# Antes de aplicar:
+#   1. Construa e publique a imagem e ajuste o campo image abaixo.
+#   2. Substitua ALLOWED_JIDS pelos numeros reais.
+#   3. Preencha OPENAI_API_KEY no Secret (ou deixe vazio para usar fallback).
+#   4. Ajuste storageClassName se o cluster nao tiver StorageClass padrao.
+#
+# Aplicar:
+#   kubectl apply -f k8s/deployment.yaml
+#
+# Acompanhar o QR Code do primeiro login:
+#   kubectl -n cansei logs -f deploy/cansei
+#
+# O PVC guarda auth/ e data/. Ele e obrigatorio para nao perder a sessao do
+# WhatsApp nem o estado/auditoria a cada restart.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cansei
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cansei-config
+  namespace: cansei
+data:
+  # Contatos vigiados ("*" para todos os contatos individuais ou lista separada por virgula).
+  ALLOWED_JIDS: "*"
+  # Lista opcional de contatos isentos (separados por virgula).
+  EXCLUDED_JIDS: ""
+  EPHEMERAL_SECONDS: "604800"
+  COOLDOWN_HOURS: "24"
+  MIN_DELAY_MINUTES: "1"
+  MAX_DELAY_MINUTES: "3"
+  LOG_LEVEL: "info"
+
+  OPENAI_MODEL: "gpt-4o-mini"
+  OPENAI_BASE_URL: "https://api.openai.com/v1"
+  OPENAI_TIMEOUT_MS: "8000"
+  OPENAI_MAX_RETRIES: "0"
+  OPENAI_TEMPERATURE: "1.05"
+  OPENAI_MAX_TOKENS: "60"
+
+  # ID do chat para notificacoes de auditoria no Telegram (opcional).
+  TELEGRAM_CHAT_ID: ""
+
+  # Caminhos dentro do volume persistente.
+  AUTH_DIR: "/var/lib/cansei/auth"
+  DATA_DIR: "/var/lib/cansei/data"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cansei-secrets
+  namespace: cansei
+type: Opaque
+stringData:
+  # Deixe vazio para usar as mensagens fallback.
+  # Nao commite uma chave real; prefira criar/atualizar via kubectl ou ExternalSecret.
+  OPENAI_API_KEY: ""
+  # Token do bot para notificacoes no Telegram (opcional).
+  TELEGRAM_BOT_TOKEN: ""
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cansei-storage
+  namespace: cansei
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Descomente e ajuste se necessario:
+  # storageClassName: standard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cansei
+  namespace: cansei
+  labels:
+    app.kubernetes.io/name: cansei
+spec:
+  # Uma unica sessao do Baileys por volume de auth. Nao escale horizontalmente.
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cansei
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cansei
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # Ajuste UID/GID se a imagem nao usar o usuario 1000.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cansei
+          # Imagem publicada no Docker Hub.
+          image: pedromol/cansei:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: cansei-config
+            - secretRef:
+                name: cansei-secrets
+                optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: storage
+              mountPath: /var/lib/cansei
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: cansei-storage
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

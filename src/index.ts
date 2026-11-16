@@ -2,6 +2,10 @@ import { randomInt } from 'node:crypto';
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  isJidBroadcast,
+  isJidGroup,
+  isJidNewsletter,
+  isJidStatusBroadcast,
   normalizeMessageContent,
   proto,
   useMultiFileAuthState,
@@ -287,6 +291,18 @@ function getStatusCode(error: unknown): number | undefined {
   return typeof statusCode === 'number' ? statusCode : undefined;
 }
 
+function shouldIgnoreChatJid(jid: string | null | undefined): boolean {
+  if (!jid) {
+    return true;
+  }
+  return Boolean(
+    isJidNewsletter(jid) ||
+      isJidBroadcast(jid) ||
+      isJidGroup(jid) ||
+      isJidStatusBroadcast(jid),
+  );
+}
+
 /**
  * A API de eventos do Baileys e nao oficial: os payloads sao lidos de forma
  * defensiva e campos ausentes/invalidos sao ignorados.
@@ -303,13 +319,16 @@ function bindSocketEvents(sock: WASocket): void {
   sock.ev.on('chats.update', (updates) => {
     for (const update of updates) {
       const jid = readChatId(update);
+      if (!jid || shouldIgnoreChatJid(jid)) {
+        continue;
+      }
       const pnJid = asRecord(update)?.pnJid;
-      if (jid && typeof pnJid === 'string' && pnJid.length > 0) {
+      if (typeof pnJid === 'string' && pnJid.length > 0) {
         lidToPn.set(jid, pnJid);
       }
       const rawExp = asRecord(update)?.ephemeralExpiration;
       const expiration = readExpiration(rawExp);
-      if (!jid || expiration === undefined) {
+      if (expiration === undefined) {
         continue;
       }
       logger.info({ jid, expiration, rawExp }, 'Evento de chat recebido via chats.update.');
@@ -320,7 +339,7 @@ function bindSocketEvents(sock: WASocket): void {
   sock.ev.on('messages.upsert', ({ messages: upsertedMessages }) => {
     for (const msg of upsertedMessages) {
       const rawJid = msg.key?.remoteJid;
-      if (!rawJid) {
+      if (!rawJid || shouldIgnoreChatJid(rawJid)) {
         continue;
       }
 
@@ -373,8 +392,11 @@ function bindSocketEvents(sock: WASocket): void {
   sock.ev.on('chats.upsert', (chats: Chat[]) => {
     for (const chat of chats) {
       const id = readChatId(chat);
+      if (!id || shouldIgnoreChatJid(id)) {
+        continue;
+      }
       const pn = asRecord(chat)?.pnJid;
-      if (id && typeof pn === 'string' && pn.length > 0) {
+      if (typeof pn === 'string' && pn.length > 0) {
         lidToPn.set(id, pn);
         pnToLid.set(pn, id);
       }
@@ -389,8 +411,11 @@ function bindSocketEvents(sock: WASocket): void {
     }
     for (const chat of chats) {
       const id = readChatId(chat);
+      if (!id || shouldIgnoreChatJid(id)) {
+        continue;
+      }
       const pn = asRecord(chat)?.pnJid;
-      if (id && typeof pn === 'string' && pn.length > 0) {
+      if (typeof pn === 'string' && pn.length > 0) {
         lidToPn.set(id, pn);
         pnToLid.set(pn, id);
       }
@@ -458,6 +483,7 @@ async function connect(): Promise<void> {
       syncFullHistory: false,
       generateHighQualityLinkPreview: false,
       fireInitQueries: false,
+      shouldIgnoreJid: (jid) => shouldIgnoreChatJid(jid),
     });
 
     socket = sock;
@@ -470,6 +496,8 @@ async function connect(): Promise<void> {
     connecting = false;
   }
 }
+
+let hasNotifiedInitialConnect = false;
 
 async function handleConnectionUpdate(
   sock: WASocket,
@@ -492,7 +520,10 @@ async function handleConnectionUpdate(
     reconnectAttempts = 0;
     logger.info('Conectado ao WhatsApp.');
     flushOpenWaiters();
-    void notifier.send('🤖 <b>[Cansei] Conectado ao WhatsApp com sucesso!</b>');
+    if (!hasNotifiedInitialConnect) {
+      hasNotifiedInitialConnect = true;
+      void notifier.send('🤖 <b>[Cansei] Conectado ao WhatsApp com sucesso!</b>');
+    }
 
     void guard.onConnectionOpen().catch((error: unknown) => {
       logger.error(

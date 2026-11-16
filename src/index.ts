@@ -497,8 +497,6 @@ async function connect(): Promise<void> {
   }
 }
 
-let hasNotifiedInitialConnect = false;
-
 async function handleConnectionUpdate(
   sock: WASocket,
   update: Partial<ConnectionState>,
@@ -520,10 +518,6 @@ async function handleConnectionUpdate(
     reconnectAttempts = 0;
     logger.info('Conectado ao WhatsApp.');
     flushOpenWaiters();
-    if (!hasNotifiedInitialConnect) {
-      hasNotifiedInitialConnect = true;
-      void notifier.send('🤖 <b>[Cansei] Conectado ao WhatsApp com sucesso!</b>');
-    }
 
     void guard.onConnectionOpen().catch((error: unknown) => {
       logger.error(
